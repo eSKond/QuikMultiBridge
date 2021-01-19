@@ -1,4 +1,5 @@
-QT += core gui widgets
+QT -= gui
+QT += core
 
 TEMPLATE = lib
 DEFINES += QUIKMULTIBRIDGE_LIBRARY
@@ -28,15 +29,13 @@ CONFIG(debug, debug|release): LIBS += -Lc:\Users\sergey\AppData\Local\Programs\P
 SOURCES += \
     bridgeplugin.cpp \
     pythonbridge.cpp \
-    quikmultibridge.cpp \
-    quikmultibridgeapplication.cpp
+    quikmultibridge.cpp
 
 HEADERS += \
     QuikMultiBridge_global.h \
     bridgeplugin.h \
     pythonbridge.h \
-    quikmultibridge.h \
-    quikmultibridgeapplication.h
+    quikmultibridge.h
 
 # Default rules for deployment.
 unix {
@@ -46,3 +45,5 @@ unix {
 
 DISTFILES += \
     README.md
+
+FORMS +=
