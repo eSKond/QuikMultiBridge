@@ -131,14 +131,22 @@ import qbridge - тут мы импортируем модуль бриджа с
 Метод processBridgeEvents по сути является единичным шагом цикла main, 
 как вы бы его писали на lua. В нём мы выводим дату/время и затем начинается
 магия. Если источник данных ещё не создан, то создаём его
-вызовом qbridge.invokeQuik("CreateDataSource", ["TQBR", "SBER", 1])
+вызовом 
+
+qbridge.invokeQuik("CreateDataSource", ["TQBR", "SBER", 1])
+
 qbridge.invokeQuikObject(ds, "Size", []) - получаем размер
 и затем устанавливаем колбек на обновление:
+
 qbridge.invokeQuikObject(ds, "SetUpdateCallback", [dsUpdateCallback])
+
 В этом же методе можно увидеть пример вызова метода Close через invokeQuikObject и удаления
 объекта с deleteQuikObject
-ну и там же завершение работы робота и бриджа:
+
+Ну и там же завершение работы робота и бриджа:
+
 qbridge.quitBridge()
+
 Как видите, мы не закладываемся на сигнатуру вызова, вместо этого разработчик 
 сам смотрит что и как передавать по документации. 
 Параметры всегда передаются как массив (list в терминах Python), 
