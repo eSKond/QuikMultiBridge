@@ -417,10 +417,10 @@ PythonBridge::PythonBridge(const QVariantMap &cfg, QObject *parent)
     Py_Initialize();
     //Нужно импортировать модуль до загрузки скрипта чтобы код настройки stdout/err сработал
     PyImport_ImportModule(b_module_name);
+    PyObject *sys = PyImport_ImportModule("sys");
+    PyObject *path = PyObject_GetAttrString(sys, "path");
     if(!venvPackagesPath.isEmpty())
     {
-        PyObject *sys = PyImport_ImportModule("sys");
-        PyObject *path = PyObject_GetAttrString(sys, "path");
         PyList_Append(path, PyUnicode_FromString(venvPackagesPath.toLocal8Bit().data()));
     }
     b_stdout_saved = PySys_GetObject("stdout");
@@ -434,6 +434,11 @@ PythonBridge::PythonBridge(const QVariantMap &cfg, QObject *parent)
         QString scriptPath = cfg.value("scriptPath").toString();
         if(QFileInfo::exists(scriptPath))
         {
+            QFileInfo fi(scriptPath);
+            //Добавим каталог где лежит сам скрипт в sys.path
+            PyList_Append(path,
+                          PyUnicode_FromString(
+                              fi.absolutePath().toLocal8Bit().data()));
             qDebug().noquote().nospace() << "Script path: \"" << scriptPath << "\"";
             QFile f(scriptPath);
             if(f.open(QIODevice::ReadOnly | QIODevice::Text))
