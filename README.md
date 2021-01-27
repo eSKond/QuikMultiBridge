@@ -157,7 +157,7 @@ qbridge.invokeQuikObject(ds, "SetUpdateCallback", [dsUpdateCallback])
 подготовительную работу:
 - регистрируем колбэки - OnStop и main
 
-То есть бридж предоставляет только 7 методов:
+То есть бридж предоставляет только 5 методов:
 - registerCallback
 - invokeQuik
 - invokeQuikObject
@@ -258,9 +258,9 @@ def Init():
 def OnCalculate(idx):
     global funName, arr, period, arrsum
     print("OnCalculate")
-    cexist = qbridge.invokeQuik("CandleExist", [idx])
+    cexist = iqb.invokeQuik("CandleExist", [idx])
     if cexist is True:
-        p = qbridge.invokeQuik(funName, [idx])
+        p = iqb.invokeQuik(funName, [idx])
         arr.append(p)
         arrsum += p
         if len(arr) > period:
@@ -271,13 +271,13 @@ def OnCalculate(idx):
 
 
 if __name__ == '__main__':
-    settings = qbridge.getQuikVariable("Settings")
+    settings = iqb.getQuikVariable("Settings")
     if settings is not None:
         funName = settings["mode"]
         period = settings["period"]
     print("Register callbacks")
-    qbridge.registerCallback('pyInit', Init)
-    qbridge.registerCallback('pyOnCalculate', OnCalculate)
+    iqb.registerCallback('pyInit', Init)
+    iqb.registerCallback('pyOnCalculate', OnCalculate)
 ```
 Собственно всё в соответствии с документацией Lua, только, пожалуй,
 ссылка на цену из свечки получилась даже изящней чем то, монстроидное, что
