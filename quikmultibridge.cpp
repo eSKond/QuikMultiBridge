@@ -3,39 +3,11 @@
 #include <QCoreApplication>
 #include <QTimer>
 #include <QThread>
+#include <thread>
 
 #define JUMP_TABLE_SIZE 100
 
-BridgePlugin *activePlugin=nullptr;
-Q_GLOBAL_STATIC(QString, eventLoopName)
-QMap<Qt::HANDLE, lua_State *> *recentStackMap=nullptr;
-Q_GLOBAL_STATIC(QList<int>, objRegistry)
-QCoreApplication *p_app=nullptr;
-
-lua_State *getRecentStackForThreadId(Qt::HANDLE ctid)
-{
-    if(!recentStackMap)
-        recentStackMap = new QMap<Qt::HANDLE, lua_State *>;
-    if(recentStackMap->contains(ctid))
-        return recentStackMap->value(ctid);
-    return nullptr;
-}
-
-lua_State *getRecentStack(Qt::HANDLE *p_ctid=nullptr)
-{
-    Qt::HANDLE ctid = QThread::currentThreadId();
-    if(p_ctid)
-        *p_ctid = ctid;
-    return getRecentStackForThreadId(ctid);
-}
-
-void setRecentStack(lua_State *l)
-{
-    if(!recentStackMap)
-        recentStackMap = new QMap<Qt::HANDLE, lua_State *>;
-    Qt::HANDLE ctid = QThread::currentThreadId();
-    recentStackMap->insert(ctid, l);
-}
+static std::thread *mainThread = nullptr;
 
 static void stackDump(lua_State *l)
 {
@@ -64,14 +36,40 @@ static void stackDump(lua_State *l)
     qDebug() << "-----------";
 }
 
+lua_State *getRecentStackForThreadId(BridgePlugin *plug, Qt::HANDLE ctid)
+{
+    if(plug)
+        return plug->getRecentStackForThreadId(ctid);
+    return nullptr;
+}
+
+lua_State *getRecentStack(BridgePlugin *plug, Qt::HANDLE *p_ctid=nullptr)
+{
+    Qt::HANDLE ctid = QThread::currentThreadId();
+    if(p_ctid)
+        *p_ctid = ctid;
+    return getRecentStackForThreadId(plug, ctid);
+}
+
+void setRecentStack(BridgePlugin *plug, lua_State *l)
+{
+    if(plug)
+    {
+        Qt::HANDLE ctid = QThread::currentThreadId();
+        plug->setRecentStack(ctid, l);
+    }
+}
+
 struct JumpTableItem
 {
+    BridgePlugin *ownerPlugin;
     Qt::HANDLE threadId;
     QString fName;
     void *customData;
     lua_CFunction callback;
     QString callerName;
     JumpTableItem():
+        ownerPlugin(nullptr),
         threadId(nullptr),
         fName(QString()),
         customData(nullptr),
@@ -94,55 +92,58 @@ int findFreeJumpTableSlot()
     return -1;
 }
 
-int findJumpTableSlotForNamedCallback(QString cbName)
+int findJumpTableSlotForNamedCallback(BridgePlugin *plug, QString cbName)
 {
     int i;
     //search slot for replacement
     for(i=0; i<JUMP_TABLE_SIZE; i++)
     {
-        if(!jumpTable[i].customData && jumpTable[i].fName==cbName)
+        if(jumpTable[i].ownerPlugin==plug && !jumpTable[i].customData && jumpTable[i].fName==cbName)
             return i;
     }
     return findFreeJumpTableSlot();
 }
 
-int findFreeOrExpiredJumpTableSlot(QString caller)
+int findFreeOrExpiredJumpTableSlot(BridgePlugin *plug, QString caller)
 {
     //find expired
     Qt::HANDLE ctid = QThread::currentThreadId();
     int i;
     for(i=0; i<JUMP_TABLE_SIZE; i++)
     {
-        if(jumpTable[i].customData && jumpTable[i].threadId==ctid && jumpTable[i].callerName==caller)
+        if(jumpTable[i].ownerPlugin==plug && jumpTable[i].customData && jumpTable[i].threadId==ctid && jumpTable[i].callerName==caller)
             return i;
     }
     //else find free
     return findFreeJumpTableSlot();
 }
 
-int findNamedJumpTableSlot(QString cbName)
+int findNamedJumpTableSlot(BridgePlugin *plug, QString cbName)
 {
     int i;
     for(i=0; i<JUMP_TABLE_SIZE; i++)
     {
-        if(jumpTable[i].fName==cbName)
+        if(jumpTable[i].ownerPlugin==plug && jumpTable[i].fName==cbName)
             return i;
     }
     return -1;
 }
 
-bool registerNamedCallback(QString cbName)
+bool registerNamedCallback(BridgePlugin *plug, QString cbName)
 {
     Qt::HANDLE ctid;
-    lua_State *recentStack = getRecentStack(&ctid);
+    lua_State *recentStack = getRecentStack(plug, &ctid);
+    //qDebug() << "register named callback:" << cbName;
     if(recentStack)
     {
-        int i=findJumpTableSlotForNamedCallback(cbName);
+        int i=findJumpTableSlotForNamedCallback(plug, cbName);
+        //qDebug() << "jumptable slot found:" << i;
         if(i<0)
         {
             qDebug() << "No more free callback slots. Can't register" << cbName;
             return false;
         }
+        jumpTable[i].ownerPlugin = plug;
         jumpTable[i].threadId = ctid;
         jumpTable[i].fName = cbName;
         lua_register(recentStack, cbName.toLocal8Bit().data(), jumpTable[i].callback);
@@ -150,51 +151,33 @@ bool registerNamedCallback(QString cbName)
     return true;
 }
 
-int registerFastCallback(QString caller, void *data)
+int registerFastCallback(BridgePlugin *plug, QString caller, void *data)
 {
     Qt::HANDLE ctid = QThread::currentThreadId();
-    int i=findFreeOrExpiredJumpTableSlot(caller);
+    int i=findFreeOrExpiredJumpTableSlot(plug, caller);
     if(i<0)
     {
         qDebug() << "No more free callback slots. Can't register fast callback";
         return -1;
     }
+    jumpTable[i].ownerPlugin = plug;
     jumpTable[i].threadId = ctid;
     jumpTable[i].callerName = caller;
     jumpTable[i].customData = data;
     return i;
 }
 
-void unregisterCallback(int i)
-{
-    if(i>=0 && i<JUMP_TABLE_SIZE)
-    {
-        if(!jumpTable[i].fName.isEmpty())
-        {
-            lua_State *recentStack = getRecentStack();
-            if(recentStack)
-            {
-                lua_pushnil(recentStack);
-                lua_setglobal(recentStack, jumpTable[i].fName.toLocal8Bit().data());
-            }
-        }
-        jumpTable[i].threadId = nullptr;
-        jumpTable[i].customData = nullptr;
-        jumpTable[i].fName = QString();
-        jumpTable[i].callerName = QString();
-    }
-}
-
-void unregisterAllNamedCallbacks()
+void unregisterAllNamedCallbacks(BridgePlugin *plug)
 {
     int i;
-    lua_State *recentStack = getRecentStack();
+    lua_State *recentStack = getRecentStack(plug);
     for(i=0; i<JUMP_TABLE_SIZE; i++)
     {
-        if(!jumpTable[i].fName.isEmpty())
+        if(jumpTable[i].ownerPlugin==plug && !jumpTable[i].fName.isEmpty())
         {
             lua_pushnil(recentStack);
             lua_setglobal(recentStack, jumpTable[i].fName.toLocal8Bit().data());
+            jumpTable[i].ownerPlugin = nullptr;
             jumpTable[i].threadId = nullptr;
             jumpTable[i].customData = nullptr;
             jumpTable[i].fName = QString();
@@ -203,14 +186,15 @@ void unregisterAllNamedCallbacks()
     }
 }
 
-void unregisterAllCallbacksForCaller(QString caller)
+void unregisterAllCallbacksForCaller(BridgePlugin *plug, QString caller)
 {
     int i;
     Qt::HANDLE ctid = QThread::currentThreadId();
     for(i=0; i<JUMP_TABLE_SIZE; i++)
     {
-        if(jumpTable[i].customData && jumpTable[i].threadId==ctid && jumpTable[i].callerName==caller)
+        if(jumpTable[i].ownerPlugin==plug && jumpTable[i].customData && jumpTable[i].threadId==ctid && jumpTable[i].callerName==caller)
         {
+            jumpTable[i].ownerPlugin = nullptr;
             jumpTable[i].threadId = nullptr;
             jumpTable[i].customData = nullptr;
             jumpTable[i].fName = QString();
@@ -219,15 +203,16 @@ void unregisterAllCallbacksForCaller(QString caller)
     }
 }
 
-void unregisterAllObjectCallbacks(int objid)
+void unregisterAllObjectCallbacks(BridgePlugin *plug, int objid)
 {
     QString prefix = QString("obj%1.").arg(objid);
     int i;
     Qt::HANDLE ctid = QThread::currentThreadId();
     for(i=0; i<JUMP_TABLE_SIZE; i++)
     {
-        if(jumpTable[i].customData && jumpTable[i].threadId==ctid && jumpTable[i].callerName.startsWith(prefix))
+        if(jumpTable[i].ownerPlugin==plug && jumpTable[i].customData && jumpTable[i].threadId==ctid && jumpTable[i].callerName.startsWith(prefix))
         {
+            jumpTable[i].ownerPlugin = nullptr;
             jumpTable[i].threadId = nullptr;
             jumpTable[i].customData = nullptr;
             jumpTable[i].fName = QString();
@@ -250,6 +235,7 @@ static int extractValueFromLuaStack(lua_State *l, int sid, QVariant &sVal, QVari
     {
     case LUA_TBOOLEAN:
     {
+        //qDebug() << "bool";
         bool v = (bool)lua_toboolean(l, sid);
         resType = 0;
         sVal = QVariant(v);
@@ -257,6 +243,7 @@ static int extractValueFromLuaStack(lua_State *l, int sid, QVariant &sVal, QVari
     }
     case LUA_TSTRING:
     {
+        //qDebug() << "string";
         QString v = QString::fromLocal8Bit(lua_tostring(l, sid));
         resType = 0;
         sVal = QVariant(v);
@@ -268,10 +255,12 @@ static int extractValueFromLuaStack(lua_State *l, int sid, QVariant &sVal, QVari
         resType = 0;
         if(v==(int)v)
         {
+            //qDebug() << "int";
             sVal = QVariant((int)v);
         }
         else
         {
+            //qDebug() << "double";
             sVal = QVariant(v);
         }
         break;
@@ -329,6 +318,7 @@ static int extractValueFromLuaStack(lua_State *l, int sid, QVariant &sVal, QVari
         }
         if(islist)
         {
+            //qDebug() << "list";
             mVal.clear();
             resType = 1;
         }
@@ -336,16 +326,19 @@ static int extractValueFromLuaStack(lua_State *l, int sid, QVariant &sVal, QVari
         {
             if(hasFunction)
             {
+                //qDebug() << "object";
                 lua_pushvalue(l, sid); //копируем таблицу
                 int objid = luaL_ref(l, LUA_REGISTRYINDEX); //сохраняем в реестр и возвращаем индекс в реестре
                 lVal.clear();
                 mVal.clear();
-                sVal = QVariant(objid);
+                QuikCallableObject qcobj;
+                qcobj.objid = objid;
+                sVal = QVariant::fromValue(qcobj);
                 resType = 0;
-                objRegistry()->append(objid);
             }
             else
             {
+                //qDebug() << "dict";
                 lVal.clear();
                 resType = 2;
             }
@@ -354,10 +347,12 @@ static int extractValueFromLuaStack(lua_State *l, int sid, QVariant &sVal, QVari
     }
     case LUA_TNIL:
     case LUA_TNONE:
+        //qDebug() << "none";
         resType = 0;
         sVal = QVariant();
         break;
     case LUA_TFUNCTION:
+        //qDebug() << "function";
         resType = 0;
         sVal = QVariant();
         break;
@@ -370,38 +365,16 @@ static int extractValueFromLuaStack(lua_State *l, int sid, QVariant &sVal, QVari
     return resType;
 }
 
-void invokePlugin(QString name, const QVariantList &args, QVariant &vres)
+void invokePlugin(BridgePlugin *plug, QString name, const QVariantList &args, QVariant &vres)
 {
-    if(name == *eventLoopName())
-    {
-        if(activePlugin)
-        {
-            static int argc=1;
-            static const char * const progName="QuikMultiBridge";
-            static char **argv = const_cast<char **>(&progName);
-            p_app = new QCoreApplication(argc, argv);
-            BridgeEventProcessor evprc(activePlugin);
-            QObject::connect(activePlugin, SIGNAL(exitBridgeSignal()), p_app, SLOT(quit()));
-            evprc.start();
-            p_app->exec();
-            evprc.stop();
-            delete p_app;
-            p_app = nullptr;
-        }
-        eventLoopName()->clear();
-        unregisterAllNamedCallbacks();
-    }
-    else
-    {
-        if(activePlugin)
-            activePlugin->callbackRequest(name, args, vres);
-    }
+    if(plug)
+        plug->callbackRequest(name, args, vres);
 }
 
-void fastInvokePlugin(BridgeCallableObject cobj, const QVariantList &args, QVariant &vres)
+void fastInvokePlugin(BridgePlugin *plug, BridgeCallableObject cobj, const QVariantList &args, QVariant &vres)
 {
-    if(activePlugin)
-        activePlugin->fastCallbackRequest(cobj, args, vres);
+    if(plug)
+        plug->fastCallbackRequest(cobj, args, vres);
 }
 
 void pushVariantToLuaStack(lua_State *l, QVariant val, QString caller)
@@ -474,7 +447,7 @@ void pushVariantToLuaStack(lua_State *l, QVariant val, QString caller)
             else
             {
                 BridgeCallableObject fcb = val.value<BridgeCallableObject>();
-                int cbi=registerFastCallback(caller, fcb.data);
+                int cbi=registerFastCallback(fcb.ownerPlugin, caller, fcb.data);
                 if(cbi<0)
                     lua_pushnil(l);
                 else
@@ -503,9 +476,9 @@ QVariant popVariantFromLuaStack(lua_State *l)
     return sv;
 }
 
-bool getQuikVariable(QString varname, QVariant &res)
+bool getQuikVariable(BridgePlugin *plug, QString varname, QVariant &res)
 {
-    lua_State *recentStack = getRecentStack();
+    lua_State *recentStack = getRecentStack(plug);
     if(!recentStack)
     {
         qDebug() << "No stack?!";
@@ -516,9 +489,10 @@ bool getQuikVariable(QString varname, QVariant &res)
     return true;
 }
 
-bool invokeQuik(QString method, const QVariantList &args, QVariantList &res, QString &errMsg)
+bool invokeQuik(BridgePlugin *plug, QString method, const QVariantList &args, QVariantList &res, QString &errMsg)
 {
-    lua_State *recentStack = getRecentStack();
+    //qDebug() << "invokeQuik:" << method;
+    lua_State *recentStack = getRecentStack(plug);
     int top = lua_gettop(recentStack);
     lua_getglobal(recentStack, method.toLocal8Bit().data());
     res.clear();
@@ -529,28 +503,31 @@ bool invokeQuik(QString method, const QVariantList &args, QVariantList &res, QSt
         QVariant v = args.at(li);
         pushVariantToLuaStack(recentStack, v, method);
     }
+    //qDebug() << "lua_pcall...";
     int pcres=lua_pcall(recentStack, li, LUA_MULTRET, 0);
     if(pcres)
     {
         errMsg = QString::fromLocal8Bit(lua_tostring(recentStack, -1));
+        //qDebug() << "..." << errMsg;
         lua_pop(recentStack, 1);
         return false;
     }
+    //qDebug() << "...finished";
     while(lua_gettop(recentStack) != top)
     {
         QVariant resItem = popVariantFromLuaStack(recentStack);
+        //qDebug() << "return" << resItem.toString();
         //мы забираем результаты с конца, поэтому и складывать нужно в обратном порядке
         res.prepend(resItem);
     }
+    //qDebug() << "return from invokeQuik";
     return true;
 }
 
-bool invokeQuikObject(int objid, QString method, const QVariantList &args, QVariantList &res, QString &errMsg)
+bool invokeQuikObject(BridgePlugin *plug, int objid, QString method, const QVariantList &args, QVariantList &res, QString &errMsg)
 {
-    if(!objRegistry()->contains(objid))
-        return false;
     QString caller = QString("obj%1.%2").arg(objid).arg(method);
-    lua_State *recentStack = getRecentStack();
+    lua_State *recentStack = getRecentStack(plug);
     int top = lua_gettop(recentStack);
     lua_rawgeti(recentStack, LUA_REGISTRYINDEX, objid);
     lua_getfield(recentStack, -1,  method.toLocal8Bit().data());
@@ -580,25 +557,18 @@ bool invokeQuikObject(int objid, QString method, const QVariantList &args, QVari
     return true;
 }
 
-void deleteQuikObject(int objid)
+void deleteQuikObject(BridgePlugin *plug, int objid)
 {
-    if(!objRegistry()->contains(objid))
-        return;
-    lua_State *recentStack = getRecentStack();
+    lua_State *recentStack = getRecentStack(plug);
     if(!recentStack)
         return;
-    unregisterAllObjectCallbacks(objid);
+    unregisterAllObjectCallbacks(plug, objid);
     luaL_unref(recentStack, LUA_REGISTRYINDEX, objid);
-    objRegistry()->removeAll(objid);
 }
 
 static int initBridge(lua_State *l)
 {
-    if(activePlugin)
-    {
-        qDebug() << "Bridge already initialized";
-        return 1;
-    }
+    BridgePlugin *plug = nullptr;
     QVariant sv;
     QVariantList lv;
     QVariantMap mv;
@@ -624,49 +594,64 @@ static int initBridge(lua_State *l)
         return 1;
     }
     //проверим специальный параметр "eventLoopName" и создадим главный цикл вне
-    //плагина - это нужно по 2-м причинам: 1 - этот цикл используется для
-    //обработки пользовательского интерфейса, 2 - завершение этого цикла
+    //плагина - это нужно поскольку завершение этого цикла
     //сигнализирует о завершении всего плагина и позволяет очистить память аккуратно
-    //сам же плагин вместо этого метода должен зарегистрировать специальный колбэк через
-    //registerProcessEventsCallback, который будет вызываться внутри eventLoop
+    //сам же плагин должен зарегистрировать этот колбэк через registerCallback
+    QString loceln;
     if(mv.contains("eventLoopName"))
     {
-        QString loceln=mv.value("eventLoopName").toString();
-        *eventLoopName()=loceln;
-        registerNamedCallback(loceln);
+        loceln=mv.value("eventLoopName").toString();
     }
     //здесь нужно создать соответствующий плагин с заданной конфигурацией
-    setRecentStack(l);
     if(bridgeType == "Python")
     {
-        activePlugin = PythonBridge::getBridge(mv);
+        qDebug() << "Create PythonBridge...";
+        plug = new PythonBridge(mv);
     }
-    if(activePlugin)
+    if(plug)
     {
-        activePlugin->start();
+        if(!loceln.isEmpty())
+            plug->setEventLoopName(loceln);
+        setRecentStack(plug, l);
+        qDebug() << "Start plugin...";
+        plug->start();
     }
 
     return 1;
 }
 
+static struct luaL_Reg ls_lib[] = {
+    {"initBridge", initBridge},
+    {nullptr, nullptr}
+};
+
+static volatile int appStarted = 0;
+static void qmbMain()
+{
+    int argc = 1;
+    char appname[] = "QuikMultiBridge";
+    char* argv[] = {appname, NULL};
+    QCoreApplication app(argc, argv);
+    qDebug() << "start application...";
+    appStarted=1;
+    app.exec();
+    qDebug() << "Application finished";
+}
+
 int luaopen_QuikMultiBridge(lua_State *l)
 {
-    //Нам не нужно регистрировать библиотеку, нам просто нужно установить глобальные указатели функций
-    //luaL_newlib(l, qmblib);
-    //lua_pushvalue(l, -1);
-    //lua_setglobal(l, "QuikMultiBridge");
-    //Можно было бы прочитать некий конфиг по имени головного скрипта и по нему делать инициализацию,
-    //но мы предпочтём явную инициализацию из скрипта lua вызовом метода initBridge
-    //lua_Debug ar;
-    //lua_getstack(l, 2, &ar);
-    //lua_getinfo(l, "S", &ar);
-    //QString scriptName = QString::fromLocal8Bit(ar.short_src);
-
-    setRecentStack(l);
+    if(!appStarted)
+    {
+        mainThread = new std::thread(qmbMain);
+        while(!appStarted);
+    }
+    luaL_newlib(l, ls_lib);
+    qDebug() << "Register initBridge...";
     lua_register(l, "initBridge", initBridge);
-
+    qDebug() << "initBridge registered";
     return 0;
 }
+
 static int universalCallbackHandler(JumpTableItem *jitem, lua_State *l)
 {
     QVariantList args;
@@ -674,6 +659,7 @@ static int universalCallbackHandler(JumpTableItem *jitem, lua_State *l)
     QVariantList lv;
     QVariantMap mv;
     int i;
+    //qDebug() << "universalCallbackHandler: start";
     int top = lua_gettop(l);
     for(i = 1; i <= top; i++)
     {
@@ -694,37 +680,74 @@ static int universalCallbackHandler(JumpTableItem *jitem, lua_State *l)
             }
         }
     }
-    setRecentStack(l);
+    //qDebug() << "universalCallbackHandler: get plugin";
+    BridgePlugin *plug = jitem->ownerPlugin;
+    /*
+    if(plug)
+        qDebug() << "universalCallbackHandler: plugin found";
+    else
+        qDebug() << "universalCallbackHandler: plugin is not found!";
+    */
+    setRecentStack(plug, l);
     bool finished = false;
     if(jitem->fName.isEmpty())
     {
+        //qDebug() << "universalCallbackHandler: fast callback";
         if(jitem->customData)
         {
             BridgeCallableObject cobj;
+            cobj.ownerPlugin = plug;
             cobj.data = jitem->customData;
-            fastInvokePlugin(cobj, args, vres);
+            fastInvokePlugin(plug, cobj, args, vres);
         }
     }
     else
     {
-        if(jitem->fName == *eventLoopName())
+        //qDebug() << "universalCallbackHandler: named callback:" << jitem->fName;
+        if(jitem->fName == plug->getEventLoopName())
             finished=true;
-        invokePlugin(jitem->fName, args, vres);
+        invokePlugin(plug, jitem->fName, args, vres);
     }
+    int rescnt = 0;
     if(!vres.isNull())
     {
-        pushVariantToLuaStack(l, vres, QString());
+        //qDebug() << "universalCallbackHandler: results received";
+        if(vres.type() == QVariant::List)
+        {
+            //qDebug() << "universalCallbackHandler: return tuple";
+            //special case: multiple results
+            QVariantList lst = vres.toList();
+            for(int li=0;li<lst.count();li++)
+            {
+                QVariant v = lst.at(li);
+                //qDebug() << "item" << li << QString::fromLocal8Bit(v.typeName());
+                pushVariantToLuaStack(l, v, QString());
+                rescnt++;
+            }
+        }
+        else
+        {
+            //qDebug() << "universalCallbackHandler: return single value";
+            pushVariantToLuaStack(l, vres, QString());
+            rescnt++;
+        }
     }
     if(finished)
     {
-        delete activePlugin;
-        activePlugin=nullptr;
+        delete plug;
+        if(!BridgePlugin::getPluginCount())
+        {
+            qApp->quit();
+            mainThread->join();
+        }
     }
-    return 1;
+    //qDebug() << "rescnt=" << rescnt;
+    return rescnt;
 }
 
 template<int i> int cbHandler(lua_State *l)
 {
+    //qDebug() << "cbHandler" << i;
     return universalCallbackHandler(&jumpTable[i], l);
 }
 
@@ -737,34 +760,3 @@ template<int i> bool JumpTable_init()
 template<> bool JumpTable_init<-1>(){ return true; }
 
 const bool jt_initialized = JumpTable_init<JUMP_TABLE_SIZE>();
-
-
-BridgeEventProcessor::BridgeEventProcessor(BridgePlugin *p)
-    : QObject(), plugin(p)
-{
-}
-
-BridgeEventProcessor::~BridgeEventProcessor()
-{
-    stop();
-}
-
-void BridgeEventProcessor::start()
-{
-    if(plugin)
-        QTimer::singleShot(0, this, SLOT(appProcessEvents()));
-}
-
-void BridgeEventProcessor::stop()
-{
-    plugin=nullptr;
-}
-
-void BridgeEventProcessor::appProcessEvents()
-{
-    if(plugin)
-    {
-        plugin->processEventsInBridge();
-        QTimer::singleShot(0, this, SLOT(appProcessEvents()));
-    }
-}
