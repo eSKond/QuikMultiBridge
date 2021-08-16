@@ -14,11 +14,11 @@ CONFIG += dll
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
 
 # lua
-# INCLUDEPATH += c:\distr\lua-5.4.2_Win64_dll16_lib\include
-INCLUDEPATH += c:\distr\lua-5.3.6_Win64_dll16_lib\include
+# INCLUDEPATH += c:\Work\lua-5.4.2_Win64_dll16_lib\include
+INCLUDEPATH += c:\Work\lua-5.3.6_Win64_dll16_lib\include
 # /usr/local/include
-# LIBS += -Lc:\distr\lua-5.4.2_Win64_dll16_lib\fromquik -llua54
-LIBS += -Lc:\distr\lua-5.3.6_Win64_dll16_lib\fromquik -llua53
+# LIBS += -Lc:\Work\lua-5.4.2_Win64_dll16_lib\fromquik -llua54
+LIBS += -Lc:\Work\lua-5.3.6_Win64_dll16_lib\fromquik -llua53
 # -L/usr/local/lib -llua
 
 # python

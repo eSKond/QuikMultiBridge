@@ -12,8 +12,10 @@ BridgePlugin::BridgePlugin(const QVariantMap &cfg, QObject *parent)
     pluginRegistry->append(this);
 }
 
+void unregisterAllNamedCallbacks(BridgePlugin *plug);
 BridgePlugin::~BridgePlugin()
 {
+    ::unregisterAllNamedCallbacks(this);
     pluginRegistry->removeAll(this);
 }
 

@@ -523,22 +523,22 @@ static PyObject *PyInit_bridge(void)
         if(PyModule_AddObject(mod, "BridgeStdoutType", reinterpret_cast<PyObject*>(&BridgeStdoutType))<0)
         {
             qDebug() << "Error on adding BridgeStdoutType object";
-            Py_DECREF(mod);
-            Py_DECREF(reinterpret_cast<PyObject*>(&BridgeStdoutType));
+            Py_XDECREF(mod);
+            Py_XDECREF(reinterpret_cast<PyObject*>(&BridgeStdoutType));
         }
         Py_INCREF(&BridgeStderrType);
         if(PyModule_AddObject(mod, "BridgeStderrType", reinterpret_cast<PyObject*>(&BridgeStderrType))<0)
         {
             qDebug() << "Error on adding BridgeStderrType object";
-            Py_DECREF(mod);
-            Py_DECREF(reinterpret_cast<PyObject*>(&BridgeStderrType));
+            Py_XDECREF(mod);
+            Py_XDECREF(reinterpret_cast<PyObject*>(&BridgeStderrType));
         }
         Py_INCREF(&PyQuikBridgeModuleType);
         if(PyModule_AddObject(mod, "PyQuikBridgeModuleType", reinterpret_cast<PyObject*>(&PyQuikBridgeModuleType))<0)
         {
             qDebug() << "Error on adding PyQuikBridgeModuleType object";
-            Py_DECREF(mod);
-            Py_DECREF(reinterpret_cast<PyObject*>(&PyQuikBridgeModuleType));
+            Py_XDECREF(mod);
+            Py_XDECREF(reinterpret_cast<PyObject*>(&PyQuikBridgeModuleType));
         }
         pyBridgeModule=mod;
     }
@@ -571,7 +571,7 @@ PyObject * initModuleObject(PythonBridge *bridge, QString objname)
         PyModule_AddObject(pyBridgeModule, objname.toLocal8Bit().data(), mo);
         PyObject *modules = PyImport_GetModuleDict();
         PyDict_SetItemString(modules, objname.toLocal8Bit().data(), mo);
-        Py_DECREF(mo);
+        Py_XDECREF(mo);
     }
     return mo;
 }

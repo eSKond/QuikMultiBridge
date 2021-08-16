@@ -738,7 +738,7 @@ static int universalCallbackHandler(JumpTableItem *jitem, lua_State *l)
         if(!BridgePlugin::getPluginCount())
         {
             qApp->quit();
-            mainThread->join();
+            //mainThread->join();
         }
     }
     //qDebug() << "rescnt=" << rescnt;
